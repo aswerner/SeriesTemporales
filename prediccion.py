@@ -248,7 +248,8 @@ def realizar_predicciones(df_bloques,k,metrica):
     df_test = df_bloques[(df_bloques["inicio"] >= fecha_inicio_test) &
                          (df_bloques["inicio"] < fecha_fin_test)].copy()
     
-    historico = df_train.copy()
+    # Para sacar la hora sobre la que estamos haciendo la predicción.
+    df_sub_train = df_bloques[(df_bloques["inicio"] < fecha_inicio_test)].copy()
     resultados = []
 
     # Iteramos sobre todos los bloques del conjunto de validación
@@ -258,10 +259,10 @@ def realizar_predicciones(df_bloques,k,metrica):
         # predicción y el perfil  real del valor a predecir para comprobar los
         # errores cometidos.
         hora_consulta = fila_test["inicio"]
-        hora_bloque = df_train["inicio"].iloc[-1]
+        hora_bloque = df_sub_train["inicio"].iloc[-1]
         real = fila_test["vector"]
         # Predicción del bloque.
-        prediccion = predecir_bloque_siguiente_kWNN(historico, hora_bloque, k, metrica)
+        prediccion = predecir_bloque_siguiente_kWNN(df_train, hora_bloque, k, metrica)
         # Calculo de erores cometidos en la predicción.
         metricas_error = calcular_metricas(real, prediccion)
         
@@ -281,7 +282,11 @@ def realizar_predicciones(df_bloques,k,metrica):
         print(f"Estimado bloque: {hora_consulta}", end="\r", flush=True)
         # Añadimos al espacio de búsqueda de vecinos el perfil real del bloque 
         # que acabamos de predecir para no arrastrar el error de predicción.
-        historico = pd.concat([historico, fila_test.to_frame().T], ignore_index=True)
+        df_train = pd.concat([df_train, fila_test.to_frame().T], ignore_index=True)
+        
+        # Añadimos el valor real del bloque predicho para poder realizar 
+        # la consulta del siguiente
+        df_sub_train = pd.concat([df_sub_train, fila_test.to_frame().T], ignore_index=True)
 
     df_resultados = pd.DataFrame(resultados)
     # Añadimos el dia de la semana al que se corresponde cada bloque
@@ -527,6 +532,8 @@ def main():
    
    ########### Calibración de parámetros
    
+   print("\n\nETAPA DE CALIBRACIÓN \n\n")
+   
    # Definimos el listado de valores de cada parámetro a probar. El número de
    # vecinos va de 2 a 20 y las distancias a utilizar serán la euclidea y 
    # manhattan
@@ -560,29 +567,82 @@ def main():
    
    print("\n------ Mejores valores de cada métrica por distancia ------\n")
    print(mejores_resultados)
-   
-   # Nos quedamos con los mejores resultados de cada distancia.
-   errores_hist = mejores_resultados.loc[
-       ["mejor_mae_cityblock", "mejor_mae_euclidean"]
-    ].copy()
-   
-   graficar_histograma_errores(
-    errores_hist,
-    "metrica",
-    "Errores medios por métrica",
-    "Métrica"
-    )
+   print("\n")
    
    ######### Predicción de la semana del 8 al 14 de junio
+   print("\n\nETAPA DE PREDICCIÓN \n\n")
    
    # Realizamos las predicciones utilizando la mejor combinación de parámetros
    # que hemos obtenido en la calibración.
    resultados_euclidea = realizar_predicciones(df_bloques,3,"euclidean")
    
+       
+   # Comprobamos el error medio global cometido al predecir toda la semana del 8 de junio.
+   resumen_global = (
+        resultados_euclidea
+        .groupby(["k", "metrica"])[["mae", "mse", "mre"]]
+        .mean()
+        .reset_index()
+        )
+   
+   print("------ Error medio global cometido al predecir la semana -------")
+   print(resumen_global)
+   
+   # Visualizamos los errores medios cometidos en la oreduicción
+   # Por horario
+   print("------- Errores medios por horario al predecir la semana -------")
+   errores_hora = (
+    resultados_euclidea
+    .groupby("hora")[["mae","mse","mre"]]
+    .mean()
+    .reset_index()
+    )
+   
+   print(errores_hora)
+   
+   # Por día
+   print("------- Errores medios por día al predecir la semana -------")
+   errores_hora = (
+    resultados_euclidea
+    .groupby(["dia_semana","nombre_dia"])[["mae","mse","mre"]]
+    .mean()
+    .reset_index()
+    )
+   
+   print(errores_hora)
+   
    # Visualizamos los errores medios por hora y por día de la semana de la medida
    # de las predicciones usando la distancia Manhattan que es la que mejores resultados
    # ha obtenido
    visualizar_resultados(resultados_euclidea, "Euclidea")
+   
+   
+   ######## Volcamos los resultados obtenidos a una tabla de excel
+   
+   # El fichero de resultados contendrá las predicciones realizadas de cada bloque
+   # junto con los errores medios cometidos al predecir cada uno de ellos.
+   columnas = ["Fecha"]
+   for i in range(0, 24):
+       horas = (i * 10) // 60
+       minutos = (i * 10) % 60
+       columnas.append(f"+{horas:02d}:{minutos:02d}:00")
+   
+   columnas.extend(["MAE", "MSE", "MRE"])
+   filas = []
+    
+   for _, entrada in resultados_euclidea.iterrows():
+       fecha = entrada["inicio"].strftime("%d/%m/%Y %H:%M:%S")
+       mae = entrada["mae"]
+       mse = entrada["mse"]
+       mre = entrada["mre"]
+       consumos = list(entrada["prediccion"])
+   
+       filas.append([fecha] + consumos + [mae,mse,mre])
+   
+   df_excel = pd.DataFrame(filas, columns=columnas)
+   df_excel.to_excel("resultados_predicciones.xlsx", index=False)
+   
+   print("Excel generado correctamente.")
     
 if __name__ == '__main__':
     main()
